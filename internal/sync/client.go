@@ -117,11 +117,20 @@ func Connect(ctx context.Context, params ConnectParams) (*Client, error) {
 		return nil, fmt.Errorf("sync: invalid host %q: must end with .obsidian.md", host)
 	}
 
-	url := "wss://" + host
+	wsURL := "wss://" + host
+	return connectToURL(ctx, wsURL, params)
+}
 
-	slog.Debug("connecting to sync server", "host", host)
+// ConnectToURL connects to a raw WebSocket URL without host validation.
+// This is intended for testing.
+func ConnectToURL(ctx context.Context, rawURL string, params ConnectParams) (*Client, error) {
+	return connectToURL(ctx, rawURL, params)
+}
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, url, nil)
+func connectToURL(ctx context.Context, wsURL string, params ConnectParams) (*Client, error) {
+	slog.Debug("connecting to sync server", "url", wsURL)
+
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sync: connect: %w", err)
 	}
