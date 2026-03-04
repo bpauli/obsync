@@ -5,6 +5,7 @@ go 1.25.5
 require (
 	github.com/99designs/keyring v1.2.2
 	github.com/alecthomas/kong v1.14.0
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/muesli/termenv v0.16.0
 	golang.org/x/crypto v0.48.0

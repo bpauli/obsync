@@ -29,6 +29,7 @@ type CLI struct {
 	List  ListCmd  `cmd:"" help:"List available vaults."`
 	Pull  PullCmd  `cmd:"" help:"Pull remote vault changes to a local directory."`
 	Push  PushCmd  `cmd:"" help:"Push local changes to a remote vault."`
+	Watch WatchCmd `cmd:"" help:"Watch and continuously sync a vault bidirectionally."`
 }
 
 // exitPanic is used to handle Kong's Exit() calls via panic/recover.
