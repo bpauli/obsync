@@ -28,6 +28,7 @@ type CLI struct {
 	Login LoginCmd `cmd:"" help:"Log in to Obsidian Sync."`
 	List  ListCmd  `cmd:"" help:"List available vaults."`
 	Pull  PullCmd  `cmd:"" help:"Pull remote vault changes to a local directory."`
+	Push  PushCmd  `cmd:"" help:"Push local changes to a remote vault."`
 }
 
 // exitPanic is used to handle Kong's Exit() calls via panic/recover.
