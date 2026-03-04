@@ -1,0 +1,17 @@
+.env
+venv
+node_modules
+CLAUDE.md
+
+# Go
+bin/
+/obsync
+*.exe
+vendor/
+
+# Ralph loop
+screenshots/*.png
+screenshots/*.jpg
+
+# OS
+.DS_Store
