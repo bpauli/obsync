@@ -26,6 +26,7 @@ type CLI struct {
 	Version kong.VersionFlag `help:"Print version and exit"`
 
 	Login LoginCmd `cmd:"" help:"Log in to Obsidian Sync."`
+	List  ListCmd  `cmd:"" help:"List available vaults."`
 }
 
 // exitPanic is used to handle Kong's Exit() calls via panic/recover.

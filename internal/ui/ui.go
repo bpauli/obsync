@@ -136,6 +136,9 @@ func (p *Printer) Print(msg string) {
 	_, _ = io.WriteString(p.o, msg)
 }
 
+// Writer returns the underlying io.Writer for use with tabwriter, json.Encoder, etc.
+func (p *Printer) Writer() io.Writer { return p.o }
+
 type ctxKey struct{}
 
 // WithUI stores a UI in the context.
