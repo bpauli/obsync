@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := build
 
-.PHONY: build test fmt lint fmt-check
+.PHONY: build test test-integration fmt lint fmt-check
 
 BIN_DIR := $(CURDIR)/bin
 BIN := $(BIN_DIR)/obsync
@@ -17,6 +17,9 @@ build:
 
 test:
 	@go test ./...
+
+test-integration:
+	@go test -tags integration -timeout 120s ./internal/integration/
 
 fmt:
 	@gofumpt -w . 2>/dev/null || gofmt -w .
