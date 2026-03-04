@@ -8,6 +8,8 @@ import (
 	"os"
 
 	"github.com/alecthomas/kong"
+
+	"obsync/internal/ui"
 )
 
 // RootFlags holds global flags available to all commands.
@@ -22,6 +24,8 @@ type CLI struct {
 	RootFlags `embed:""`
 
 	Version kong.VersionFlag `help:"Print version and exit"`
+
+	Login LoginCmd `cmd:"" help:"Log in to Obsidian Sync."`
 }
 
 // exitPanic is used to handle Kong's Exit() calls via panic/recover.
@@ -62,7 +66,12 @@ func Execute(args []string) (err error) {
 		Level: logLevel,
 	})))
 
-	ctx := context.Background()
+	u, err := ui.New(ui.Options{})
+	if err != nil {
+		return err
+	}
+
+	ctx := ui.WithUI(context.Background(), u)
 	kctx.BindTo(ctx, (*context.Context)(nil))
 	kctx.Bind(&cli.RootFlags)
 
