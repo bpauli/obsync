@@ -6,6 +6,8 @@ require (
 	github.com/99designs/keyring v1.2.2
 	github.com/alecthomas/kong v1.14.0
 	github.com/muesli/termenv v0.16.0
+	golang.org/x/crypto v0.48.0
+	golang.org/x/text v0.34.0
 )
 
 require (
@@ -19,6 +21,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	golang.org/x/sys v0.30.0 // indirect
-	golang.org/x/term v0.3.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/term v0.40.0 // indirect
 )
