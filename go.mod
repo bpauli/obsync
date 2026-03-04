@@ -5,8 +5,10 @@ go 1.25.5
 require (
 	github.com/99designs/keyring v1.2.2
 	github.com/alecthomas/kong v1.14.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/muesli/termenv v0.16.0
 	golang.org/x/crypto v0.48.0
+	golang.org/x/term v0.40.0
 	golang.org/x/text v0.34.0
 )
 
@@ -22,5 +24,4 @@ require (
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/term v0.40.0 // indirect
 )
