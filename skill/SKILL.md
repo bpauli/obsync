@@ -2,32 +2,7 @@
 name: obsync
 description: Obsidian Sync CLI for syncing vaults on headless Linux servers with full end-to-end encryption.
 homepage: https://github.com/bpauli/obsync
-metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "🔄",
-        "os": ["darwin", "linux"],
-        "requires": { "bins": ["obsync"] },
-        "install":
-          [
-            {
-              "id": "homebrew",
-              "kind": "homebrew",
-              "formula": "bpauli/tap/obsync",
-              "bins": ["obsync"],
-              "label": "Homebrew (recommended)",
-            },
-            {
-              "id": "source",
-              "kind": "source",
-              "url": "https://github.com/bpauli/obsync",
-              "bins": ["obsync"],
-              "label": "Build from source (Go 1.25+)",
-            },
-          ],
-      },
-  }
+metadata: {"clawdbot":{"emoji":"🔄","os":["darwin","linux"],"requires":{"bins":["obsync"]},"install":[{"id":"homebrew","kind":"brew","formula":"bpauli/tap/obsync","bins":["obsync"],"label":"Homebrew (recommended)"},{"id":"source","kind":"source","url":"https://github.com/bpauli/obsync","bins":["obsync"],"label":"Build from source (Go 1.25+)"}]}}
 ---
 
 # obsync
