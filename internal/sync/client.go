@@ -92,6 +92,7 @@ type pingMessage struct {
 type Client struct {
 	conn       *websocket.Conn
 	key        []byte
+	encVer     int
 	perFileMax int64
 	stopPing   chan struct{}
 }
@@ -138,6 +139,7 @@ func connectToURL(ctx context.Context, wsURL string, params ConnectParams) (*Cli
 	c := &Client{
 		conn:     conn,
 		key:      params.Key,
+		encVer:   params.EncryptionVersion,
 		stopPing: make(chan struct{}),
 	}
 
@@ -171,7 +173,7 @@ func connectToURL(ctx context.Context, wsURL string, params ConnectParams) (*Cli
 
 	if resp.Res != "ok" {
 		conn.Close()
-		return nil, fmt.Errorf("sync: unexpected init response: %q", resp.Res)
+		return nil, fmt.Errorf("sync: unexpected init response: res=%q error=%q", resp.Res, resp.Error)
 	}
 
 	c.perFileMax = resp.PerFileMax
@@ -196,6 +198,8 @@ func (c *Client) ReceivePush(ctx context.Context) (*PushMessage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("sync: read message: %w", err)
 		}
+
+		slog.Debug("ws recv", "type", msgType, "len", len(data))
 
 		if msgType != websocket.TextMessage {
 			continue
@@ -223,6 +227,9 @@ func (c *Client) ReceivePush(ctx context.Context) (*PushMessage, error) {
 	}
 }
 
+// ErrFileDeleted is returned when a pull request finds the file was deleted.
+var ErrFileDeleted = fmt.Errorf("sync: file deleted on server")
+
 // PullFile sends a pull request for a file UID and reads the binary response frames,
 // reassembling and decrypting the content.
 func (c *Client) PullFile(ctx context.Context, uid int64) ([]byte, error) {
@@ -231,14 +238,33 @@ func (c *Client) PullFile(ctx context.Context, uid int64) ([]byte, error) {
 		return nil, fmt.Errorf("sync: send pull: %w", err)
 	}
 
-	// Read size response.
+	// Read size response — server may also respond with deleted or error.
 	var sizeResp struct {
-		Op    string `json:"op"`
-		Size  int64  `json:"size"`
-		Pieces int   `json:"pieces"`
+		Op      string `json:"op,omitempty"`
+		Size    int64  `json:"size"`
+		Pieces  int    `json:"pieces"`
+		Deleted bool   `json:"deleted,omitempty"`
+		Error   string `json:"error,omitempty"`
+		Res     string `json:"res,omitempty"`
 	}
 	if err := c.conn.ReadJSON(&sizeResp); err != nil {
 		return nil, fmt.Errorf("sync: read pull size: %w", err)
+	}
+
+	slog.Debug("pull response", "uid", uid, "size", sizeResp.Size, "pieces", sizeResp.Pieces,
+		"deleted", sizeResp.Deleted, "error", sizeResp.Error, "res", sizeResp.Res)
+
+	if sizeResp.Error != "" {
+		return nil, fmt.Errorf("sync: pull error: %s", sizeResp.Error)
+	}
+
+	if sizeResp.Deleted {
+		return nil, ErrFileDeleted
+	}
+
+	// Empty file — no binary frames to read.
+	if sizeResp.Size == 0 && sizeResp.Pieces == 0 {
+		return []byte{}, nil
 	}
 
 	if sizeResp.Pieces == 0 {
@@ -279,12 +305,12 @@ func (c *Client) PushFile(ctx context.Context, path string, data []byte, hash st
 		return fmt.Errorf("sync: encrypt file: %w", err)
 	}
 
-	encryptedPath, err := crypto.EncryptPath(c.key, path)
+	encryptedPath, err := crypto.EncodePath(c.key, path, c.encVer)
 	if err != nil {
 		return fmt.Errorf("sync: encrypt path: %w", err)
 	}
 
-	encryptedHash, err := crypto.EncryptPath(c.key, hash)
+	encryptedHash, err := crypto.EncodePath(c.key, hash, c.encVer)
 	if err != nil {
 		return fmt.Errorf("sync: encrypt hash: %w", err)
 	}
@@ -353,7 +379,7 @@ func (c *Client) PushFile(ctx context.Context, path string, data []byte, hash st
 
 // PushDelete sends a delete notification for a path.
 func (c *Client) PushDelete(ctx context.Context, path string) error {
-	encryptedPath, err := crypto.EncryptPath(c.key, path)
+	encryptedPath, err := crypto.EncodePath(c.key, path, c.encVer)
 	if err != nil {
 		return fmt.Errorf("sync: encrypt path: %w", err)
 	}

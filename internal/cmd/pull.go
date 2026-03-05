@@ -104,7 +104,10 @@ func (c *PullCmd) Run(ctx context.Context, flags *RootFlags) error {
 	if err != nil {
 		return fmt.Errorf("derive key: %w", err)
 	}
-	keyHash := crypto.KeyHash(key)
+	keyHash, err := computeKeyHash(key, vault.Salt, vault.EncryptionVersion)
+	if err != nil {
+		return fmt.Errorf("compute key hash: %w", err)
+	}
 
 	// Save password if requested.
 	if c.SavePassword {
@@ -126,7 +129,7 @@ func (c *PullCmd) Run(ctx context.Context, flags *RootFlags) error {
 	state.VaultUID = vault.ID
 
 	// Get WebSocket host.
-	host, err := client.VaultAccess(ctx, token, vault.ID, keyHash, 3)
+	host, err := client.VaultAccess(ctx, token, vault.ID, keyHash, vault.Host, vault.EncryptionVersion)
 	if err != nil {
 		var apiErr *api.APIError
 		if errors.As(err, &apiErr) {
@@ -152,7 +155,7 @@ func (c *PullCmd) Run(ctx context.Context, flags *RootFlags) error {
 		Version:           state.Version,
 		Initial:           initial,
 		Device:            device,
-		EncryptionVersion: 3,
+		EncryptionVersion: vault.EncryptionVersion,
 		Key:               key,
 	})
 	if err != nil {
@@ -160,8 +163,9 @@ func (c *PullCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 	defer sc.Close()
 
-	// Receive pushes until ready.
-	var fileCount, deleteCount int
+	// Phase 1: Collect all push notifications until ready.
+	var pushes []*sync.PushMessage
+	var deleteCount int
 	for {
 		msg, err := sc.ReceivePush(ctx)
 		if err != nil {
@@ -177,26 +181,28 @@ func (c *PullCmd) Run(ctx context.Context, flags *RootFlags) error {
 			continue
 		}
 
-		// Decrypt path.
-		plainPath, err := crypto.DecryptPath(key, msg.Path)
+		pushes = append(pushes, msg)
+	}
+
+	// Phase 2: Process collected pushes — pull file content after ready.
+	var fileCount int
+	for _, msg := range pushes {
+		plainPath, err := crypto.DecodePath(key, msg.Path, vault.EncryptionVersion)
 		if err != nil {
 			return fmt.Errorf("decrypt path: %w", err)
 		}
 
 		if msg.Deleted {
-			// Delete local file.
 			localPath := filepath.Join(c.Path, plainPath)
 			if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
 				slog.Warn("failed to delete file", "path", plainPath, "error", err)
 			}
 			delete(state.Files, plainPath)
 			deleteCount++
-			slog.Debug("deleted", "path", plainPath)
 			continue
 		}
 
 		if msg.Folder {
-			// Create directory.
 			dirPath := filepath.Join(c.Path, plainPath)
 			if err := os.MkdirAll(dirPath, 0o755); err != nil {
 				return fmt.Errorf("create dir %s: %w", plainPath, err)
@@ -206,6 +212,10 @@ func (c *PullCmd) Run(ctx context.Context, flags *RootFlags) error {
 
 		// Pull file content.
 		content, err := sc.PullFile(ctx, msg.UID)
+		if errors.Is(err, sync.ErrFileDeleted) {
+			slog.Debug("file deleted on server during pull", "path", plainPath)
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("pull file %s: %w", plainPath, err)
 		}
@@ -219,22 +229,19 @@ func (c *PullCmd) Run(ctx context.Context, flags *RootFlags) error {
 			return fmt.Errorf("write file %s: %w", plainPath, err)
 		}
 
-		// Set mtime.
 		if msg.MTime > 0 {
 			mtime := time.UnixMilli(msg.MTime)
 			_ = os.Chtimes(localPath, mtime, mtime)
 		}
 
-		// Decrypt hash for state tracking.
 		plainHash := ""
 		if msg.Hash != "" {
-			plainHash, err = crypto.DecryptPath(key, msg.Hash)
+			plainHash, err = crypto.DecodePath(key, msg.Hash, vault.EncryptionVersion)
 			if err != nil {
 				slog.Warn("failed to decrypt hash", "path", plainPath, "error", err)
 			}
 		}
 
-		// Update state.
 		state.Files[plainPath] = sync.FileState{
 			Hash:     plainHash,
 			SyncHash: plainHash,
@@ -253,6 +260,18 @@ func (c *PullCmd) Run(ctx context.Context, flags *RootFlags) error {
 
 	u.Out().Successf("Pull complete: %d files synced, %d deleted (version %d)", fileCount, deleteCount, state.Version)
 	return nil
+}
+
+// computeKeyHash returns the appropriate keyhash for the vault's encryption version.
+func computeKeyHash(key []byte, salt string, encVer int) (string, error) {
+	switch encVer {
+	case 0:
+		return crypto.KeyHash(key), nil
+	case 2, 3:
+		return crypto.KeyHashV2(key, salt)
+	default:
+		return "", fmt.Errorf("unsupported encryption version: %d", encVer)
+	}
 }
 
 // resolveVault finds a vault by name or ID in the list response.

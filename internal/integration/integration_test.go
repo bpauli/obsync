@@ -21,6 +21,99 @@ func envOrSkip(t *testing.T, key string) string {
 	return v
 }
 
+// vaultSetup holds the common state needed by tests that connect to a vault.
+type vaultSetup struct {
+	Token  string
+	Vault  *api.Vault
+	Key    []byte
+	KeyHash string
+	Host   string
+	EncVer int
+}
+
+// setupVault signs in, finds the test vault, derives keys, and resolves the host.
+func setupVault(t *testing.T) vaultSetup {
+	t.Helper()
+
+	email := envOrSkip(t, "OBSYNC_TEST_EMAIL")
+	password := envOrSkip(t, "OBSYNC_TEST_PASSWORD")
+	e2ePassword := os.Getenv("OBSYNC_TEST_E2E_PASSWORD") // optional
+	vaultName := envOrSkip(t, "OBSYNC_TEST_VAULT")
+
+	ctx := context.Background()
+	client := api.NewClient()
+
+	signinResp, err := client.Signin(ctx, email, password, "")
+	if err != nil {
+		t.Fatalf("Signin failed: %v", err)
+	}
+
+	vaultsResp, err := client.ListVaults(ctx, signinResp.Token)
+	if err != nil {
+		t.Fatalf("ListVaults failed: %v", err)
+	}
+
+	var vault *api.Vault
+	for _, v := range vaultsResp.Vaults {
+		if v.Name == vaultName || v.ID == vaultName {
+			vault = &v
+			break
+		}
+	}
+	if vault == nil {
+		t.Skipf("vault %q not found", vaultName)
+	}
+
+	// Determine the password for key derivation.
+	keyPassword := e2ePassword
+	if keyPassword == "" {
+		keyPassword = vault.Password
+	}
+	// For enc_version 0, password may be empty but we still derive a key from the salt.
+
+	var key []byte
+	var keyHash string
+	encVer := vault.EncryptionVersion
+
+	switch encVer {
+	case 0:
+		key, err = crypto.DeriveKey(keyPassword, vault.Salt)
+		if err != nil {
+			t.Fatalf("DeriveKey failed: %v", err)
+		}
+		keyHash = crypto.KeyHash(key)
+	case 2, 3:
+		if keyPassword == "" {
+			t.Fatal("E2E password required for encrypted vault")
+		}
+		key, err = crypto.DeriveKey(keyPassword, vault.Salt)
+		if err != nil {
+			t.Fatalf("DeriveKey failed: %v", err)
+		}
+		keyHash, err = crypto.KeyHashV2(key, vault.Salt)
+		if err != nil {
+			t.Fatalf("KeyHashV2 failed: %v", err)
+		}
+	default:
+		t.Fatalf("unsupported encryption version: %d", encVer)
+	}
+
+	// Resolve WebSocket host.
+	host, err := client.VaultAccess(ctx, signinResp.Token, vault.ID, keyHash, vault.Host, encVer)
+	if err != nil {
+		t.Fatalf("VaultAccess failed: %v", err)
+	}
+
+	return vaultSetup{
+		Token:   signinResp.Token,
+		Vault:   vault,
+		Key:     key,
+		KeyHash: keyHash,
+		Host:    host,
+		EncVer:  encVer,
+	}
+}
+
 func TestLogin(t *testing.T) {
 	email := envOrSkip(t, "OBSYNC_TEST_EMAIL")
 	password := envOrSkip(t, "OBSYNC_TEST_PASSWORD")
@@ -103,61 +196,19 @@ func TestEncryption(t *testing.T) {
 }
 
 func TestPullPush(t *testing.T) {
-	email := envOrSkip(t, "OBSYNC_TEST_EMAIL")
-	password := envOrSkip(t, "OBSYNC_TEST_PASSWORD")
-	e2ePassword := envOrSkip(t, "OBSYNC_TEST_E2E_PASSWORD")
-	vaultName := envOrSkip(t, "OBSYNC_TEST_VAULT")
-
+	s := setupVault(t)
 	ctx := context.Background()
-	client := api.NewClient()
 
-	// Sign in.
-	signinResp, err := client.Signin(ctx, email, password, "")
-	if err != nil {
-		t.Fatalf("Signin failed: %v", err)
-	}
-
-	// List vaults and find the test vault.
-	vaultsResp, err := client.ListVaults(ctx, signinResp.Token)
-	if err != nil {
-		t.Fatalf("ListVaults failed: %v", err)
-	}
-
-	var vault *api.Vault
-	for _, v := range vaultsResp.Vaults {
-		if v.Name == vaultName || v.ID == vaultName {
-			vault = &v
-			break
-		}
-	}
-	if vault == nil {
-		t.Skipf("vault %q not found", vaultName)
-	}
-
-	// Derive key.
-	key, err := crypto.DeriveKey(e2ePassword, vault.Salt)
-	if err != nil {
-		t.Fatalf("DeriveKey failed: %v", err)
-	}
-	keyHash := crypto.KeyHash(key)
-
-	// Get WebSocket host.
-	host, err := client.VaultAccess(ctx, signinResp.Token, vault.ID, keyHash, 3)
-	if err != nil {
-		t.Fatalf("VaultAccess failed: %v", err)
-	}
-
-	// Connect and do initial pull.
 	sc, err := sync.Connect(ctx, sync.ConnectParams{
-		Host:              host,
-		Token:             signinResp.Token,
-		VaultUID:          vault.ID,
-		KeyHash:           keyHash,
+		Host:              s.Host,
+		Token:             s.Token,
+		VaultUID:          s.Vault.ID,
+		KeyHash:           s.KeyHash,
 		Version:           0,
 		Initial:           true,
 		Device:            "integration-test",
-		EncryptionVersion: 3,
-		Key:               key,
+		EncryptionVersion: s.EncVer,
+		Key:               s.Key,
 	})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
@@ -184,58 +235,19 @@ func TestPullPush(t *testing.T) {
 }
 
 func TestWatchSync(t *testing.T) {
-	// This test requires a running vault and is primarily a manual test.
-	// It verifies the basic watch connection and initial sync.
-	email := envOrSkip(t, "OBSYNC_TEST_EMAIL")
-	password := envOrSkip(t, "OBSYNC_TEST_PASSWORD")
-	e2ePassword := envOrSkip(t, "OBSYNC_TEST_E2E_PASSWORD")
-	vaultName := envOrSkip(t, "OBSYNC_TEST_VAULT")
-
+	s := setupVault(t)
 	ctx := context.Background()
-	client := api.NewClient()
-
-	signinResp, err := client.Signin(ctx, email, password, "")
-	if err != nil {
-		t.Fatalf("Signin failed: %v", err)
-	}
-
-	vaultsResp, err := client.ListVaults(ctx, signinResp.Token)
-	if err != nil {
-		t.Fatalf("ListVaults failed: %v", err)
-	}
-
-	var vault *api.Vault
-	for _, v := range vaultsResp.Vaults {
-		if v.Name == vaultName || v.ID == vaultName {
-			vault = &v
-			break
-		}
-	}
-	if vault == nil {
-		t.Skipf("vault %q not found", vaultName)
-	}
-
-	key, err := crypto.DeriveKey(e2ePassword, vault.Salt)
-	if err != nil {
-		t.Fatalf("DeriveKey failed: %v", err)
-	}
-	keyHash := crypto.KeyHash(key)
-
-	host, err := client.VaultAccess(ctx, signinResp.Token, vault.ID, keyHash, 3)
-	if err != nil {
-		t.Fatalf("VaultAccess failed: %v", err)
-	}
 
 	sc, err := sync.Connect(ctx, sync.ConnectParams{
-		Host:              host,
-		Token:             signinResp.Token,
-		VaultUID:          vault.ID,
-		KeyHash:           keyHash,
+		Host:              s.Host,
+		Token:             s.Token,
+		VaultUID:          s.Vault.ID,
+		KeyHash:           s.KeyHash,
 		Version:           0,
 		Initial:           true,
 		Device:            "watch-test",
-		EncryptionVersion: 3,
-		Key:               key,
+		EncryptionVersion: s.EncVer,
+		Key:               s.Key,
 	})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)

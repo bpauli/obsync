@@ -27,7 +27,7 @@ func TestWatchCmd_InitialSync(t *testing.T) {
 	encContent, _ := crypto.Encrypt(key, content)
 
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -44,6 +44,9 @@ func TestWatchCmd_InitialSync(t *testing.T) {
 			"uid":   int64(1),
 		})
 
+		// Send ready — client collects pushes first, then pulls files.
+		conn.WriteJSON(map[string]any{"op": "ready", "version": int64(42)})
+
 		// Read pull request.
 		var pull map[string]any
 		conn.ReadJSON(&pull)
@@ -57,9 +60,6 @@ func TestWatchCmd_InitialSync(t *testing.T) {
 
 		// Send binary content.
 		conn.WriteMessage(websocket.BinaryMessage, encContent)
-
-		// Send ready.
-		conn.WriteJSON(map[string]any{"op": "ready", "version": int64(42)})
 
 		// After initial sync, the receive loop starts reading.
 		// Wait for the next read attempt (which blocks), then cancel.
@@ -134,7 +134,7 @@ func TestWatchCmd_NotLoggedIn(t *testing.T) {
 
 func TestWatchCmd_VaultNotFound(t *testing.T) {
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 	cleanup := mockSyncServer(t, vaults, nil)
 	defer cleanup()
@@ -168,6 +168,7 @@ func TestAddWatchDirs(t *testing.T) {
 	// Create directory structure.
 	os.MkdirAll(filepath.Join(dir, "sub", "nested"), 0o755)
 	os.MkdirAll(filepath.Join(dir, ".hidden"), 0o755)
+	os.MkdirAll(filepath.Join(dir, ".obsidian"), 0o755)
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -201,11 +202,14 @@ func TestAddWatchDirs(t *testing.T) {
 	if has(filepath.Join(dir, ".hidden")) {
 		t.Error("hidden dir should not be watched")
 	}
+	if !has(filepath.Join(dir, ".obsidian")) {
+		t.Error(".obsidian dir should be watched")
+	}
 }
 
 func TestWatchCmd_GracefulShutdown(t *testing.T) {
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

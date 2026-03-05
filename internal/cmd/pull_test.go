@@ -106,7 +106,7 @@ func TestPullCmd_Success(t *testing.T) {
 	encContent, _ := crypto.Encrypt(key, content)
 
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 
 	cleanup := mockSyncServer(t, vaults, func(conn *websocket.Conn) {
@@ -121,6 +121,9 @@ func TestPullCmd_Success(t *testing.T) {
 			"uid":   int64(1),
 		})
 
+		// Send ready — client collects pushes first, then pulls files.
+		conn.WriteJSON(map[string]any{"op": "ready", "version": int64(42)})
+
 		// Read pull request.
 		var pull map[string]any
 		conn.ReadJSON(&pull)
@@ -134,9 +137,6 @@ func TestPullCmd_Success(t *testing.T) {
 
 		// Send binary content.
 		conn.WriteMessage(websocket.BinaryMessage, encContent)
-
-		// Send ready.
-		conn.WriteJSON(map[string]any{"op": "ready", "version": int64(42)})
 	})
 	defer cleanup()
 
@@ -186,7 +186,7 @@ func TestPullCmd_DeletedFile(t *testing.T) {
 	encPath, _ := crypto.EncryptPath(key, "old-file.md")
 
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 
 	cleanup := mockSyncServer(t, vaults, func(conn *websocket.Conn) {
@@ -244,7 +244,7 @@ func TestPullCmd_NotLoggedIn(t *testing.T) {
 
 func TestPullCmd_VaultNotFound(t *testing.T) {
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 	cleanup := mockSyncServer(t, vaults, nil)
 	defer cleanup()
@@ -270,7 +270,7 @@ func TestPullCmd_PasswordFromKeyring(t *testing.T) {
 	key, _ := crypto.DeriveKey("keyring-pass", "testsalt")
 
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 
 	cleanup := mockSyncServer(t, vaults, func(conn *websocket.Conn) {
@@ -304,7 +304,7 @@ func TestPullCmd_PasswordFromKeyring(t *testing.T) {
 
 func TestPullCmd_SavePassword(t *testing.T) {
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 
 	cleanup := mockSyncServer(t, vaults, func(conn *websocket.Conn) {

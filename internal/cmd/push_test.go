@@ -20,7 +20,7 @@ func TestPushCmd_Success(t *testing.T) {
 	key, _ := crypto.DeriveKey("testpass", "testsalt")
 
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 
 	var pushedPaths []string
@@ -99,7 +99,7 @@ func TestPushCmd_DeletedFile(t *testing.T) {
 	key, _ := crypto.DeriveKey("testpass", "testsalt")
 
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 
 	var deletedPaths []string
@@ -177,7 +177,7 @@ func TestPushCmd_DeletedFile(t *testing.T) {
 
 func TestPushCmd_NothingToPush(t *testing.T) {
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 
 	cleanup := mockSyncServer(t, vaults, func(conn *websocket.Conn) {
@@ -224,7 +224,7 @@ func TestPushCmd_NotLoggedIn(t *testing.T) {
 
 func TestPushCmd_VaultNotFound(t *testing.T) {
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 	cleanup := mockSyncServer(t, vaults, nil)
 	defer cleanup()
@@ -248,7 +248,7 @@ func TestPushCmd_VaultNotFound(t *testing.T) {
 
 func TestPushCmd_SavePassword(t *testing.T) {
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 
 	cleanup := mockSyncServer(t, vaults, func(conn *websocket.Conn) {
@@ -288,7 +288,7 @@ func TestPushCmd_SavePassword(t *testing.T) {
 
 func TestPushCmd_SkipsUnchangedFiles(t *testing.T) {
 	vaults := []api.Vault{
-		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt"},
+		{ID: "vault-1", Name: "My Notes", Password: "x", Salt: "testsalt", EncryptionVersion: 3},
 	}
 
 	cleanup := mockSyncServer(t, vaults, func(conn *websocket.Conn) {
@@ -351,13 +351,17 @@ func TestScanLocalFiles(t *testing.T) {
 	// Create .obsync-state.json (should be skipped as hidden).
 	os.WriteFile(filepath.Join(dir, ".obsync-state.json"), []byte("{}"), 0o644)
 
+	// Create .obsidian config (should be included).
+	os.MkdirAll(filepath.Join(dir, ".obsidian"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".obsidian", "app.json"), []byte(`{}`), 0o644)
+
 	files, err := scanLocalFiles(dir)
 	if err != nil {
 		t.Fatalf("scanLocalFiles: %v", err)
 	}
 
-	if len(files) != 2 {
-		t.Fatalf("expected 2 files, got %d: %v", len(files), files)
+	if len(files) != 3 {
+		t.Fatalf("expected 3 files, got %d: %v", len(files), files)
 	}
 
 	if _, ok := files["root.md"]; !ok {
@@ -365,6 +369,9 @@ func TestScanLocalFiles(t *testing.T) {
 	}
 	if _, ok := files[filepath.Join("sub", "nested.md")]; !ok {
 		t.Error("missing sub/nested.md")
+	}
+	if _, ok := files[filepath.Join(".obsidian", "app.json")]; !ok {
+		t.Error("missing .obsidian/app.json")
 	}
 	if _, ok := files[".hidden"]; ok {
 		t.Error("should skip hidden files")

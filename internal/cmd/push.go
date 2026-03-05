@@ -86,7 +86,10 @@ func (c *PushCmd) Run(ctx context.Context, flags *RootFlags) error {
 	if err != nil {
 		return fmt.Errorf("derive key: %w", err)
 	}
-	keyHash := crypto.KeyHash(key)
+	keyHash, err := computeKeyHash(key, vault.Salt, vault.EncryptionVersion)
+	if err != nil {
+		return fmt.Errorf("compute key hash: %w", err)
+	}
 
 	// Save password if requested.
 	if c.SavePassword {
@@ -129,7 +132,7 @@ func (c *PushCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	// Get WebSocket host.
-	host, err := client.VaultAccess(ctx, token, vault.ID, keyHash, 3)
+	host, err := client.VaultAccess(ctx, token, vault.ID, keyHash, vault.Host, vault.EncryptionVersion)
 	if err != nil {
 		var apiErr *api.APIError
 		if errors.As(err, &apiErr) {
@@ -154,7 +157,7 @@ func (c *PushCmd) Run(ctx context.Context, flags *RootFlags) error {
 		Version:           state.Version,
 		Initial:           false,
 		Device:            device,
-		EncryptionVersion: 3,
+		EncryptionVersion: vault.EncryptionVersion,
 		Key:               key,
 	})
 	if err != nil {
@@ -257,9 +260,9 @@ func scanLocalFiles(root string) (map[string]string, error) {
 			return nil
 		}
 
-		// Skip hidden files/directories and state file.
+		// Skip hidden files/directories except .obsidian/ (vault config).
 		name := d.Name()
-		if strings.HasPrefix(name, ".") {
+		if strings.HasPrefix(name, ".") && name != ".obsidian" {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}

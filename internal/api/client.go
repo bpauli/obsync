@@ -72,12 +72,14 @@ type VaultAccessRequest struct {
 	Token             string `json:"token"`
 	VaultUID          string `json:"vault_uid"`
 	KeyHash           string `json:"keyhash"`
+	Host              string `json:"host"`
 	EncryptionVersion int    `json:"encryption_version"`
 }
 
 // VaultAccessResponse is the response from POST /vault/access.
 type VaultAccessResponse struct {
-	Host string `json:"host"`
+	Host    string `json:"host"`
+	Allowed bool   `json:"allowed"`
 }
 
 // APIError represents an error response from the Obsidian API.
@@ -120,19 +122,25 @@ func (c *Client) ListVaults(ctx context.Context, token string) (*ListVaultsRespo
 	return &resp, nil
 }
 
-// VaultAccess requests WebSocket access to a vault, returning the host.
-func (c *Client) VaultAccess(ctx context.Context, token, vaultUID, keyHash string, encVer int) (string, error) {
+// VaultAccess validates keyhash and requests WebSocket access to a vault,
+// returning the sync host. For encrypted vaults the response contains the host;
+// for unencrypted vaults the caller-provided host is returned.
+func (c *Client) VaultAccess(ctx context.Context, token, vaultUID, keyHash, host string, encVer int) (string, error) {
 	req := VaultAccessRequest{
 		Token:             token,
 		VaultUID:          vaultUID,
 		KeyHash:           keyHash,
+		Host:              host,
 		EncryptionVersion: encVer,
 	}
 	var resp VaultAccessResponse
 	if err := c.post(ctx, "/vault/access", req, &resp); err != nil {
 		return "", err
 	}
-	return resp.Host, nil
+	if resp.Host != "" {
+		return resp.Host, nil
+	}
+	return host, nil
 }
 
 // post sends a JSON POST request and decodes the response.
@@ -148,6 +156,7 @@ func (c *Client) post(ctx context.Context, path string, body, result any) error 
 		return fmt.Errorf("api: create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Origin", "app://obsidian.md")
 
 	httpResp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -164,6 +173,14 @@ func (c *Client) post(ctx context.Context, path string, body, result any) error 
 		apiErr := &APIError{StatusCode: httpResp.StatusCode}
 		_ = json.Unmarshal(respBody, apiErr)
 		return apiErr
+	}
+
+	// The Obsidian API may return HTTP 200 with an error in the body.
+	var errCheck struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(respBody, &errCheck) == nil && errCheck.Error != "" {
+		return &APIError{StatusCode: httpResp.StatusCode, Message: errCheck.Error}
 	}
 
 	if result != nil {

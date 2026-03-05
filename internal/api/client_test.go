@@ -195,6 +195,9 @@ func TestVaultAccess(t *testing.T) {
 		if req.KeyHash != "keyhash-abc" {
 			t.Errorf("keyhash = %q, want keyhash-abc", req.KeyHash)
 		}
+		if req.Host != "sync-123.obsidian.md" {
+			t.Errorf("host = %q, want sync-123.obsidian.md", req.Host)
+		}
 		if req.EncryptionVersion != 3 {
 			t.Errorf("encryption_version = %d, want 3", req.EncryptionVersion)
 		}
@@ -204,7 +207,7 @@ func TestVaultAccess(t *testing.T) {
 		})
 	})
 
-	host, err := c.VaultAccess(context.Background(), "my-token", "vault-123", "keyhash-abc", 3)
+	host, err := c.VaultAccess(context.Background(), "my-token", "vault-123", "keyhash-abc", "sync-123.obsidian.md", 3)
 	if err != nil {
 		t.Fatalf("VaultAccess: %v", err)
 	}
@@ -221,7 +224,7 @@ func TestVaultAccessError(t *testing.T) {
 		})
 	})
 
-	_, err := c.VaultAccess(context.Background(), "token", "bad-vault", "hash", 3)
+	_, err := c.VaultAccess(context.Background(), "token", "bad-vault", "hash", "sync-1.obsidian.md", 3)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -231,6 +234,31 @@ func TestVaultAccessError(t *testing.T) {
 	}
 	if apiErr.StatusCode != http.StatusForbidden {
 		t.Errorf("StatusCode = %d, want %d", apiErr.StatusCode, http.StatusForbidden)
+	}
+}
+
+func TestSigninErrorHTTP200(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		// Obsidian API returns 200 with error in body for some failures.
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Login failed, please double check your email and password.",
+		})
+	})
+
+	_, err := c.Signin(context.Background(), "bad@example.com", "wrong", "")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("expected *APIError, got %T", err)
+	}
+	if apiErr.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want %d", apiErr.StatusCode, http.StatusOK)
+	}
+	if apiErr.Message == "" {
+		t.Error("expected non-empty error message")
 	}
 }
 

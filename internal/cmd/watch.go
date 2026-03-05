@@ -30,6 +30,8 @@ type WatchCmd struct {
 	Path         string `arg:"" help:"Local directory path for the vault." type:"path"`
 	Password     string `help:"E2E encryption password." short:"p"`
 	SavePassword bool   `help:"Save E2E password to keyring for future use." short:"s"`
+
+	encVer int // set during Run from vault.EncryptionVersion
 }
 
 // debounceDuration is the time to wait after a filesystem event before pushing.
@@ -93,7 +95,10 @@ func (c *WatchCmd) Run(ctx context.Context, flags *RootFlags) error {
 	if err != nil {
 		return fmt.Errorf("derive key: %w", err)
 	}
-	keyHash := crypto.KeyHash(key)
+	keyHash, err := computeKeyHash(key, vault.Salt, vault.EncryptionVersion)
+	if err != nil {
+		return fmt.Errorf("compute key hash: %w", err)
+	}
 
 	if c.SavePassword {
 		if err := store.SetE2EPassword(vault.ID, e2ePassword); err != nil {
@@ -123,6 +128,7 @@ func (c *WatchCmd) Run(ctx context.Context, flags *RootFlags) error {
 	defer cancel()
 
 	// Connect and run sync loop with reconnection.
+	c.encVer = vault.EncryptionVersion
 	return c.syncLoop(ctx, u, client, token, vault, key, keyHash, device, &state)
 }
 
@@ -164,7 +170,7 @@ func (c *WatchCmd) runSession(ctx context.Context, u *ui.UI, client *api.Client,
 	device string, state *sync.State) error {
 
 	// Get WebSocket host.
-	host, err := client.VaultAccess(ctx, token, vault.ID, keyHash, 3)
+	host, err := client.VaultAccess(ctx, token, vault.ID, keyHash, vault.Host, vault.EncryptionVersion)
 	if err != nil {
 		return fmt.Errorf("vault access: %w", err)
 	}
@@ -180,7 +186,7 @@ func (c *WatchCmd) runSession(ctx context.Context, u *ui.UI, client *api.Client,
 		Version:           state.Version,
 		Initial:           initial,
 		Device:            device,
-		EncryptionVersion: 3,
+		EncryptionVersion: vault.EncryptionVersion,
 		Key:               key,
 	})
 	if err != nil {
@@ -244,11 +250,15 @@ func (c *WatchCmd) runSession(ctx context.Context, u *ui.UI, client *api.Client,
 }
 
 func (c *WatchCmd) receiveUntilReady(ctx context.Context, sc *sync.Client, key []byte, state *sync.State) (int, int, error) {
-	var fileCount, deleteCount int
+	// Phase 1: Collect all push notifications until ready.
+	// The server sends all pushes in a burst, then "ready". We cannot pull
+	// files inline because the next message would be another push, not the
+	// pull response.
+	var pushes []*sync.PushMessage
 	for {
 		msg, err := sc.ReceivePush(ctx)
 		if err != nil {
-			return fileCount, deleteCount, err
+			return 0, 0, err
 		}
 
 		if msg.Op == "ready" {
@@ -256,11 +266,15 @@ func (c *WatchCmd) receiveUntilReady(ctx context.Context, sc *sync.Client, key [
 			break
 		}
 
-		if msg.Op != "push" {
-			continue
+		if msg.Op == "push" {
+			pushes = append(pushes, msg)
 		}
+	}
 
-		fc, dc, err := c.handlePush(ctx, sc, key, state, msg)
+	// Phase 2: Process collected pushes — pull file content after ready.
+	var fileCount, deleteCount int
+	for _, msg := range pushes {
+		fc, dc, err := c.handlePush(ctx, sc, key, c.encVer, state, msg)
 		if err != nil {
 			return fileCount, deleteCount, err
 		}
@@ -270,8 +284,8 @@ func (c *WatchCmd) receiveUntilReady(ctx context.Context, sc *sync.Client, key [
 	return fileCount, deleteCount, nil
 }
 
-func (c *WatchCmd) handlePush(ctx context.Context, sc *sync.Client, key []byte, state *sync.State, msg *sync.PushMessage) (int, int, error) {
-	plainPath, err := crypto.DecryptPath(key, msg.Path)
+func (c *WatchCmd) handlePush(ctx context.Context, sc *sync.Client, key []byte, encVer int, state *sync.State, msg *sync.PushMessage) (int, int, error) {
+	plainPath, err := crypto.DecodePath(key, msg.Path, encVer)
 	if err != nil {
 		return 0, 0, fmt.Errorf("decrypt path: %w", err)
 	}
@@ -295,6 +309,10 @@ func (c *WatchCmd) handlePush(ctx context.Context, sc *sync.Client, key []byte, 
 	}
 
 	content, err := sc.PullFile(ctx, msg.UID)
+	if errors.Is(err, sync.ErrFileDeleted) {
+		slog.Debug("file deleted on server during pull", "path", plainPath)
+		return 0, 0, nil
+	}
 	if err != nil {
 		return 0, 0, fmt.Errorf("pull file %s: %w", plainPath, err)
 	}
@@ -314,7 +332,7 @@ func (c *WatchCmd) handlePush(ctx context.Context, sc *sync.Client, key []byte, 
 
 	plainHash := ""
 	if msg.Hash != "" {
-		plainHash, err = crypto.DecryptPath(key, msg.Hash)
+		plainHash, err = crypto.DecodePath(key, msg.Hash, encVer)
 		if err != nil {
 			slog.Warn("failed to decrypt hash", "path", plainPath, "error", err)
 		}
@@ -411,7 +429,7 @@ func (c *WatchCmd) receiveLoop(ctx context.Context, sc *sync.Client, key []byte,
 			continue
 		}
 
-		fc, dc, err := c.handlePush(ctx, sc, key, state, msg)
+		fc, dc, err := c.handlePush(ctx, sc, key, c.encVer, state, msg)
 		if err != nil {
 			return err
 		}
@@ -421,11 +439,11 @@ func (c *WatchCmd) receiveLoop(ctx context.Context, sc *sync.Client, key []byte,
 		}
 
 		if fc > 0 {
-			plainPath, _ := crypto.DecryptPath(key, msg.Path)
+			plainPath, _ := crypto.DecodePath(key, msg.Path, c.encVer)
 			u.Out().Infof("Received: %s", plainPath)
 		}
 		if dc > 0 {
-			plainPath, _ := crypto.DecryptPath(key, msg.Path)
+			plainPath, _ := crypto.DecodePath(key, msg.Path, c.encVer)
 			u.Out().Infof("Deleted: %s", plainPath)
 		}
 	}
@@ -500,7 +518,7 @@ func (c *WatchCmd) watchLoop(ctx context.Context, watcher *fsnotify.Watcher, sc 
 }
 
 // addWatchDirs recursively adds a directory and all its subdirectories to the watcher.
-// It skips hidden directories (starting with .).
+// It skips hidden directories except .obsidian/ (vault config).
 func addWatchDirs(watcher *fsnotify.Watcher, root string) error {
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -508,7 +526,7 @@ func addWatchDirs(watcher *fsnotify.Watcher, root string) error {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if name != "." && strings.HasPrefix(name, ".") {
+			if name != "." && strings.HasPrefix(name, ".") && name != ".obsidian" {
 				return filepath.SkipDir
 			}
 			return watcher.Add(path)
