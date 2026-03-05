@@ -1,6 +1,7 @@
 .env
 venv
 node_modules
+.claude/
 CLAUDE.md
 
 # Go
@@ -8,10 +9,6 @@ bin/
 /obsync
 *.exe
 vendor/
-
-# Ralph loop
-screenshots/*.png
-screenshots/*.jpg
 
 # OS
 .DS_Store
