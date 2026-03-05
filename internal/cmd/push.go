@@ -165,6 +165,17 @@ func (c *PushCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 	defer sc.Close()
 
+	// Drain pending push notifications until "ready" before pushing.
+	for {
+		msg, err := sc.ReceivePush(ctx)
+		if err != nil {
+			return fmt.Errorf("receive push: %w", err)
+		}
+		if msg.Op == "ready" {
+			break
+		}
+	}
+
 	// Push changed/new files.
 	var pushCount int
 	for _, path := range pushPaths {

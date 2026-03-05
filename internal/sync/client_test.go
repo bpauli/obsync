@@ -138,9 +138,13 @@ func connectToTestServer(t *testing.T, srv *httptest.Server, params ConnectParam
 	}
 
 	c := &Client{
-		conn:     conn,
-		key:      params.Key,
-		stopPing: make(chan struct{}),
+		conn:       conn,
+		key:        params.Key,
+		stopPing:   make(chan struct{}),
+		pushCh:     make(chan []byte, 16),
+		responseCh: make(chan []byte, 16),
+		binaryCh:   make(chan []byte, 16),
+		readerDone: make(chan struct{}),
 	}
 
 	init := initMessage{
@@ -176,6 +180,9 @@ func connectToTestServer(t *testing.T, srv *httptest.Server, params ConnectParam
 	}
 
 	c.perFileMax = resp.PerFileMax
+
+	go c.readLoop()
+
 	return c, nil
 }
 
@@ -440,6 +447,9 @@ func TestPushFile(t *testing.T) {
 			t.Error("expected folder=false")
 		}
 
+		// Respond to metadata — signal ready for chunks.
+		conn.WriteJSON(map[string]any{})
+
 		// Read binary chunks.
 		var encrypted []byte
 		for i := 0; i < meta.Pieces; i++ {
@@ -452,6 +462,9 @@ func TestPushFile(t *testing.T) {
 				t.Errorf("expected binary, got type %d", msgType)
 			}
 			encrypted = append(encrypted, data...)
+
+			// Ack chunk.
+			conn.WriteJSON(serverResponse{Res: "ok"})
 		}
 
 		// Verify we can decrypt.
@@ -463,9 +476,6 @@ func TestPushFile(t *testing.T) {
 		if string(decrypted) != string(plaintext) {
 			t.Errorf("expected %q, got %q", plaintext, decrypted)
 		}
-
-		// Send ack.
-		conn.WriteJSON(serverResponse{Res: "ok"})
 
 		time.Sleep(100 * time.Millisecond)
 	}))

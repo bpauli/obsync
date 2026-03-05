@@ -25,6 +25,9 @@ func TestPushCmd_Success(t *testing.T) {
 
 	var pushedPaths []string
 	cleanup := mockSyncServer(t, vaults, func(conn *websocket.Conn) {
+		// Send ready so client drains initial sync.
+		conn.WriteJSON(map[string]any{"op": "ready", "version": int64(0)})
+
 		// Read push metadata.
 		var meta map[string]any
 		if err := conn.ReadJSON(&meta); err != nil {
@@ -37,6 +40,9 @@ func TestPushCmd_Success(t *testing.T) {
 		plainPath, _ := crypto.DecryptPath(key, encPath)
 		pushedPaths = append(pushedPaths, plainPath)
 
+		// Respond to metadata.
+		conn.WriteJSON(map[string]any{})
+
 		// Read binary chunk(s).
 		pieces := int(meta["pieces"].(float64))
 		for i := 0; i < pieces; i++ {
@@ -45,10 +51,9 @@ func TestPushCmd_Success(t *testing.T) {
 				t.Logf("read chunk: %v", err)
 				return
 			}
+			// Ack chunk.
+			conn.WriteJSON(map[string]any{"res": "ok"})
 		}
-
-		// Send ack.
-		conn.WriteJSON(map[string]any{"res": "ok"})
 	})
 	defer cleanup()
 
@@ -104,6 +109,9 @@ func TestPushCmd_DeletedFile(t *testing.T) {
 
 	var deletedPaths []string
 	cleanup := mockSyncServer(t, vaults, func(conn *websocket.Conn) {
+		// Send ready so client drains initial sync.
+		conn.WriteJSON(map[string]any{"op": "ready", "version": int64(10)})
+
 		// Read delete metadata.
 		var meta map[string]any
 		if err := conn.ReadJSON(&meta); err != nil {
