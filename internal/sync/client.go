@@ -279,6 +279,9 @@ func (c *Client) ReceivePush(ctx context.Context) (*PushMessage, error) {
 // ErrFileDeleted is returned when a pull request finds the file was deleted.
 var ErrFileDeleted = fmt.Errorf("sync: file deleted on server")
 
+// ErrFileTooLarge is returned when a file exceeds the server's per-file size limit.
+var ErrFileTooLarge = fmt.Errorf("sync: file size over limit")
+
 // PullFile sends a pull request for a file UID and reads the binary response frames,
 // reassembling and decrypting the content.
 func (c *Client) PullFile(ctx context.Context, uid int64) ([]byte, error) {
@@ -400,6 +403,9 @@ func (c *Client) PushFile(ctx context.Context, path string, data []byte, hash st
 	}
 
 	if errMsg := metaResp.errMsg(); errMsg != "" {
+		if strings.Contains(strings.ToLower(errMsg), "size over limit") {
+			return ErrFileTooLarge
+		}
 		return fmt.Errorf("sync: push error: %s", errMsg)
 	}
 

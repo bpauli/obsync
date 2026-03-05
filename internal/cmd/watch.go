@@ -378,6 +378,10 @@ func (c *WatchCmd) pushLocalChanges(ctx context.Context, sc *sync.Client, key []
 		mtime := info.ModTime().UnixMilli()
 
 		if err := sc.PushFile(ctx, path, data, hash, info.Size(), now, mtime, false); err != nil {
+			if errors.Is(err, sync.ErrFileTooLarge) {
+				slog.Warn("skipping file (exceeds server size limit)", "path", path, "size", info.Size())
+				continue
+			}
 			return pushCount, deleteCount, fmt.Errorf("push file %s: %w", path, err)
 		}
 
