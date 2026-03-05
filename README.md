@@ -1,5 +1,9 @@
 # obsync
 
+[![release](https://github.com/bpauli/obsync/actions/workflows/release.yml/badge.svg)](https://github.com/bpauli/obsync/actions/workflows/release.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/bpauli/obsync)](https://goreportcard.com/report/github.com/bpauli/obsync)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
 A command-line tool for syncing [Obsidian](https://obsidian.md) vaults on headless Linux servers. Uses the official Obsidian Sync protocol over WebSocket with full end-to-end encryption.
 
 Built for running Obsidian vaults on servers where the desktop app isn't available — perfect for automated workflows, CI/CD pipelines, or keeping a server-side copy of your notes.
@@ -17,24 +21,20 @@ Built for running Obsidian vaults on servers where the desktop app isn't availab
 
 ## Installation
 
-### From Source
+### Homebrew (macOS / Linux)
 
 ```bash
-go install obsync@latest
+brew install bpauli/tap/obsync
 ```
 
 ### Build from Source
+
+Requires Go 1.25+.
 
 ```bash
 git clone https://github.com/bpauli/obsync.git
 cd obsync
 go build -o obsync ./cmd/obsync
-```
-
-Set version info at build time:
-
-```bash
-go build -ldflags "-X obsync/internal/cmd.version=1.0.0 -X obsync/internal/cmd.commit=$(git rev-parse --short HEAD) -X obsync/internal/cmd.date=$(date -u +%Y-%m-%d)" -o obsync ./cmd/obsync
 ```
 
 ## Quick Start
