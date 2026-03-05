@@ -219,6 +219,14 @@ internal/
   ui/                Terminal UI (colored output, prompts, spinners)
 ```
 
+## Disclaimer
+
+This is an unofficial, community-built tool. It is **not affiliated with, endorsed by, or supported by Obsidian** or Dynalist Inc. "Obsidian" is a trademark of Dynalist Inc.
+
+obsync requires a valid [Obsidian Sync](https://obsidian.md/sync) subscription. It does not bypass any authentication or payment — users must log in with their own Obsidian account credentials.
+
+Use at your own risk. The Obsidian Sync protocol is undocumented and may change without notice, which could break this tool at any time.
+
 ## License
 
 MIT
