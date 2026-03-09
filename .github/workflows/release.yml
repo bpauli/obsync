@@ -67,7 +67,7 @@ jobs:
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           VERSION="${TAG#v}"
-          sed -i "s/version = \".*\"/version = \"${VERSION}-dev\"/" internal/cmd/version.go
+          sed -i "s/version = \".*\"/version = \"${VERSION}\"/" internal/cmd/version.go
           cat internal/cmd/version.go
 
       - name: Commit and push
@@ -76,7 +76,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add internal/cmd/version.go
           git diff --cached --quiet && exit 0
-          git commit -m "chore: bump version to ${{ steps.tag.outputs.tag }}-dev"
+          git commit -m "chore: set version to ${{ steps.tag.outputs.tag }}"
           git push origin main
 
   update-homebrew:
