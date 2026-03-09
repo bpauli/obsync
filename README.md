@@ -18,6 +18,7 @@ Built for running Obsidian vaults on servers where the desktop app isn't availab
 - **Headless operation** — file-based keyring backend, no GUI required
 - **Chunked transfers** — handles large files with 2MB chunked uploads/downloads
 - **Automatic reconnection** — exponential backoff (1s–60s) on connection loss
+- **Hooks** — run custom scripts on sync events (file received, pre/post push, connection loss, etc.)
 
 ## Installation
 
