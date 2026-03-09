@@ -45,6 +45,40 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  update-version:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Update version.go
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${TAG#v}"
+          sed -i "s/version = \".*\"/version = \"${VERSION}-dev\"/" internal/cmd/version.go
+          cat internal/cmd/version.go
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add internal/cmd/version.go
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: bump version to ${{ steps.tag.outputs.tag }}-dev"
+          git push origin main
+
   update-homebrew:
     needs: goreleaser
     runs-on: ubuntu-latest
