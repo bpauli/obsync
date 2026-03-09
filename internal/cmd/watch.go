@@ -502,6 +502,15 @@ func (c *WatchCmd) receiveLoop(ctx context.Context, sc *sync.Client, key []byte,
 			plainPath, _ := crypto.DecodePath(key, msg.Path, c.encVer)
 			u.Out().Infof("Deleted: %s", plainPath)
 		}
+
+		if fc > 0 || dc > 0 {
+			if err := c.hookRunner.Fire(ctx, hooks.Event{
+				Event: hooks.PostPull,
+				Stats: &hooks.OperationStats{FilesSynced: fc, FilesDeleted: dc},
+			}); err != nil {
+				slog.Warn("post-pull hook failed", "error", err)
+			}
+		}
 	}
 }
 
@@ -559,6 +568,14 @@ func (c *WatchCmd) watchLoop(ctx context.Context, watcher *fsnotify.Watcher, sc 
 			}
 			pending = false
 
+			if err := c.hookRunner.Fire(ctx, hooks.Event{Event: hooks.PrePush}); err != nil {
+				var blocked *hooks.BlockedError
+				if errors.As(err, &blocked) {
+					slog.Warn("pre-push hook blocked push", "error", err)
+					continue
+				}
+			}
+
 			pushCount, delCount, err := c.pushLocalChanges(ctx, sc, key, state)
 			if err != nil {
 				return fmt.Errorf("push local changes: %w", err)
@@ -569,6 +586,13 @@ func (c *WatchCmd) watchLoop(ctx context.Context, watcher *fsnotify.Watcher, sc 
 					slog.Warn("failed to save state", "error", err)
 				}
 				u.Out().Infof("Pushed %d files, deleted %d", pushCount, delCount)
+
+				if err := c.hookRunner.Fire(ctx, hooks.Event{
+					Event: hooks.PostPush,
+					Stats: &hooks.OperationStats{FilesSynced: pushCount, FilesDeleted: delCount},
+				}); err != nil {
+					slog.Warn("post-push hook failed", "error", err)
+				}
 			}
 		}
 	}
