@@ -102,6 +102,16 @@ func EnsureKeyringDir() (string, error) {
 	return kd, nil
 }
 
+// HooksConfigPath returns the default global hooks config file path
+// (~/.config/obsync/hooks.json).
+func HooksConfigPath() (string, error) {
+	dir, err := ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "hooks.json"), nil
+}
+
 func defaults() (Config, error) {
 	hostname, _ := os.Hostname()
 	return Config{

@@ -19,6 +19,7 @@ import (
 	"obsync/internal/api"
 	"obsync/internal/config"
 	"obsync/internal/crypto"
+	"obsync/internal/hooks"
 	"obsync/internal/secrets"
 	"obsync/internal/sync"
 	"obsync/internal/ui"
@@ -31,7 +32,8 @@ type WatchCmd struct {
 	Password     string `help:"E2E encryption password." short:"p"`
 	SavePassword bool   `help:"Save E2E password to keyring for future use." short:"s"`
 
-	encVer int // set during Run from vault.EncryptionVersion
+	encVer     int           // set during Run from vault.EncryptionVersion
+	hookRunner *hooks.Runner // set during Run
 }
 
 // debounceDuration is the time to wait after a filesystem event before pushing.
@@ -127,8 +129,9 @@ func (c *WatchCmd) Run(ctx context.Context, flags *RootFlags) error {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Connect and run sync loop with reconnection.
+	// Load hooks and connect.
 	c.encVer = vault.EncryptionVersion
+	c.hookRunner = loadHookRunner(c.Path, vault.Name, vault.ID)
 	return c.syncLoop(ctx, u, client, token, vault, key, keyHash, device, &state)
 }
 
@@ -138,11 +141,17 @@ func (c *WatchCmd) syncLoop(ctx context.Context, u *ui.UI, client *api.Client,
 
 	backoff := time.Second
 	maxBackoff := 60 * time.Second
+	hadFailure := false
 
 	for {
+		if hadFailure {
+			_ = c.hookRunner.Fire(ctx, hooks.Event{Event: hooks.ConnectionRestored})
+		}
+
 		err := c.runSession(ctx, u, client, token, vault, key, keyHash, device, state)
 		if err == nil || ctx.Err() != nil {
 			if ctx.Err() != nil {
+				_ = c.hookRunner.Fire(ctx, hooks.Event{Event: hooks.WatchStop})
 				u.Out().Infof("Watch stopped")
 			}
 			return nil
@@ -151,8 +160,12 @@ func (c *WatchCmd) syncLoop(ctx context.Context, u *ui.UI, client *api.Client,
 		slog.Warn("sync session ended", "error", err)
 		u.Err().Errorf("Connection lost: %v — reconnecting in %s", err, backoff)
 
+		_ = c.hookRunner.Fire(ctx, hooks.Event{Event: hooks.ConnectionLost, Error: err.Error()})
+		hadFailure = true
+
 		select {
 		case <-ctx.Done():
+			_ = c.hookRunner.Fire(ctx, hooks.Event{Event: hooks.WatchStop})
 			return nil
 		case <-time.After(backoff):
 		}
@@ -212,6 +225,9 @@ func (c *WatchCmd) runSession(ctx context.Context, u *ui.UI, client *api.Client,
 
 	u.Out().Successf("Initial sync: pulled %d, deleted %d, pushed %d, push-deleted %d (version %d)",
 		pullCount, deleteCount, pushCount, pushDelCount, state.Version)
+
+	// Fire WatchStart after initial sync completes.
+	_ = c.hookRunner.Fire(ctx, hooks.Event{Event: hooks.WatchStart})
 
 	// Start heartbeat.
 	sc.StartHeartbeat(ctx)
@@ -297,6 +313,12 @@ func (c *WatchCmd) handlePush(ctx context.Context, sc *sync.Client, key []byte, 
 		}
 		delete(state.Files, plainPath)
 		slog.Debug("deleted", "path", plainPath)
+		if err := c.hookRunner.Fire(ctx, hooks.Event{
+			Event: hooks.PostFileDeleted,
+			File:  &hooks.FileInfo{Path: plainPath, LocalPath: localPath},
+		}); err != nil {
+			return 0, 1, fmt.Errorf("post-file-deleted hook: %w", err)
+		}
 		return 0, 1, nil
 	}
 
@@ -346,6 +368,17 @@ func (c *WatchCmd) handlePush(ctx context.Context, sc *sync.Client, key []byte, 
 		Size:     msg.Size,
 	}
 	slog.Debug("pulled", "path", plainPath, "size", msg.Size)
+	if err := c.hookRunner.Fire(ctx, hooks.Event{
+		Event: hooks.PostFileReceived,
+		File: &hooks.FileInfo{
+			Path:      plainPath,
+			LocalPath: localPath,
+			Size:      msg.Size,
+			Hash:      plainHash,
+		},
+	}); err != nil {
+		return 1, 0, fmt.Errorf("post-file-received hook: %w", err)
+	}
 	return 1, 0, nil
 }
 
@@ -394,6 +427,18 @@ func (c *WatchCmd) pushLocalChanges(ctx context.Context, sc *sync.Client, key []
 		}
 		pushCount++
 		slog.Debug("pushed", "path", path, "size", info.Size())
+
+		if err := c.hookRunner.Fire(ctx, hooks.Event{
+			Event: hooks.PostFilePushed,
+			File: &hooks.FileInfo{
+				Path:      path,
+				LocalPath: localPath,
+				Size:      info.Size(),
+				Hash:      hash,
+			},
+		}); err != nil {
+			return pushCount, deleteCount, fmt.Errorf("post-file-pushed hook: %w", err)
+		}
 	}
 
 	// Push deletions.
@@ -405,6 +450,13 @@ func (c *WatchCmd) pushLocalChanges(ctx context.Context, sc *sync.Client, key []
 			delete(state.Files, path)
 			deleteCount++
 			slog.Debug("pushed delete", "path", path)
+
+			if err := c.hookRunner.Fire(ctx, hooks.Event{
+				Event: hooks.PostFileDeleted,
+				File:  &hooks.FileInfo{Path: path, LocalPath: filepath.Join(c.Path, path)},
+			}); err != nil {
+				return pushCount, deleteCount, fmt.Errorf("post-file-deleted hook: %w", err)
+			}
 		}
 	}
 
@@ -499,6 +551,7 @@ func (c *WatchCmd) watchLoop(ctx context.Context, watcher *fsnotify.Watcher, sc 
 				return nil
 			}
 			slog.Warn("fsnotify error", "error", err)
+			_ = c.hookRunner.Fire(ctx, hooks.Event{Event: hooks.SyncError, Error: err.Error()})
 
 		case <-debounce.C:
 			if !pending {

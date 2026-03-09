@@ -14,6 +14,7 @@ import (
 	"obsync/internal/api"
 	"obsync/internal/config"
 	"obsync/internal/crypto"
+	"obsync/internal/hooks"
 	"obsync/internal/secrets"
 	"obsync/internal/sync"
 	"obsync/internal/ui"
@@ -128,6 +129,14 @@ func (c *PullCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 	state.VaultUID = vault.ID
 
+	// Load hooks.
+	hookRunner := loadHookRunner(c.Path, vault.Name, vault.ID)
+
+	// Fire PrePull hook.
+	if err := hookRunner.Fire(ctx, hooks.Event{Event: hooks.PrePull}); err != nil {
+		return fmt.Errorf("pre-pull hook: %w", err)
+	}
+
 	// Get WebSocket host.
 	host, err := client.VaultAccess(ctx, token, vault.ID, keyHash, vault.Host, vault.EncryptionVersion)
 	if err != nil {
@@ -199,6 +208,12 @@ func (c *PullCmd) Run(ctx context.Context, flags *RootFlags) error {
 			}
 			delete(state.Files, plainPath)
 			deleteCount++
+			if err := hookRunner.Fire(ctx, hooks.Event{
+				Event: hooks.PostFileDeleted,
+				File:  &hooks.FileInfo{Path: plainPath, LocalPath: localPath},
+			}); err != nil {
+				return fmt.Errorf("post-file-deleted hook: %w", err)
+			}
 			continue
 		}
 
@@ -251,11 +266,31 @@ func (c *PullCmd) Run(ctx context.Context, flags *RootFlags) error {
 		}
 		fileCount++
 		slog.Debug("pulled", "path", plainPath, "size", msg.Size)
+
+		if err := hookRunner.Fire(ctx, hooks.Event{
+			Event: hooks.PostFileReceived,
+			File: &hooks.FileInfo{
+				Path:      plainPath,
+				LocalPath: localPath,
+				Size:      msg.Size,
+				Hash:      plainHash,
+			},
+		}); err != nil {
+			return fmt.Errorf("post-file-received hook: %w", err)
+		}
 	}
 
 	// Save updated state.
 	if err := state.Save(c.Path); err != nil {
 		return fmt.Errorf("save state: %w", err)
+	}
+
+	// Fire PostPull hook.
+	if err := hookRunner.Fire(ctx, hooks.Event{
+		Event: hooks.PostPull,
+		Stats: &hooks.OperationStats{FilesSynced: fileCount, FilesDeleted: deleteCount},
+	}); err != nil {
+		return fmt.Errorf("post-pull hook: %w", err)
 	}
 
 	u.Out().Successf("Pull complete: %d files synced, %d deleted (version %d)", fileCount, deleteCount, state.Version)

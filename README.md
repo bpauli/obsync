@@ -79,6 +79,143 @@ obsync watch "My Notes" ~/notes -p "your-e2e-password"
 
 Starts bidirectional real-time sync. Remote changes are pulled immediately via WebSocket. Local changes are detected via filesystem events (fsnotify) with a 500ms debounce.
 
+## Hooks
+
+Hooks let you run custom scripts in response to sync events — post-process files, trigger builds, send notifications, or commit changes to git.
+
+### Configuration
+
+Hooks are configured in JSON files at two levels:
+
+| Location | Scope |
+| --- | --- |
+| `~/.config/obsync/hooks.json` | All vaults (global) |
+| `<vault-path>/.obsync-hooks.json` | Single vault (local) |
+
+Both files are loaded and merged additively.
+
+### Example: auto-commit synced files to git
+
+Create `~/notes/.obsync-hooks.json`:
+
+```json
+{
+  "hooks": {
+    "PostPull": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git add -A && git diff --cached --quiet || git commit -m \"sync: $(date +%Y-%m-%d_%H:%M:%S)\" && git push origin main"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This runs after every pull completes — it stages all changes, commits if there's anything new, and pushes to your remote.
+
+### Hook events
+
+#### File-level events (fire per file)
+
+| Event | When it fires | Matcher |
+| --- | --- | --- |
+| `PostFileReceived` | After a file is pulled and written to disk | regex on file path |
+| `PostFilePushed` | After a file is pushed to remote | regex on file path |
+| `PostFileDeleted` | After a file is deleted | regex on file path |
+
+#### Operation-level events (fire once per operation)
+
+| Event | When it fires |
+| --- | --- |
+| `PrePull` | Before a pull begins |
+| `PostPull` | After a pull completes |
+| `PrePush` | Before a push begins |
+| `PostPush` | After a push completes |
+
+#### Watch-mode events
+
+| Event | When it fires |
+| --- | --- |
+| `WatchStart` | When watch mode begins (after initial sync) |
+| `WatchStop` | When watch mode ends (graceful shutdown) |
+| `ConnectionLost` | When the WebSocket connection drops |
+| `ConnectionRestored` | When reconnection succeeds |
+| `SyncError` | When a non-fatal sync error occurs |
+
+### Configuration schema
+
+```json
+{
+  "hooks": {
+    "PostFileReceived": [
+      {
+        "matcher": ".*\\.md$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/process-note.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `type` | yes | — | Only `"command"` for now |
+| `command` | yes | — | Shell command (run via `sh -c`) |
+| `timeout` | no | 30 | Seconds before killing the process |
+
+The `matcher` field is a regex matched against the file path for file-level events. Omit it or set to `""` / `"*"` to match all files. Operation and watch events ignore matchers.
+
+### Exit codes
+
+Hooks control flow via their exit code:
+
+| Exit code | Behavior |
+| --- | --- |
+| `0` | Success — continue |
+| `2` | **Block** — abort the current operation (stderr is shown as the error) |
+| any other | Non-blocking warning — log and continue |
+
+This means the hook script itself decides whether a failure should stop the sync or just warn. For example, a `PrePush` validation hook can `exit 2` to prevent the push, while a `PostFileReceived` notification hook can `exit 1` on failure without interrupting the pull.
+
+### Stdin and environment
+
+Each hook receives JSON context on stdin:
+
+```json
+{
+  "event": "PostFileReceived",
+  "vault_name": "My Notes",
+  "vault_id": "abc123",
+  "vault_path": "/home/user/notes",
+  "file": {
+    "path": "Daily Notes/2024-01-15.md",
+    "local_path": "/home/user/notes/Daily Notes/2024-01-15.md",
+    "size": 1234,
+    "hash": "abcdef..."
+  }
+}
+```
+
+Hooks also receive these environment variables:
+
+| Variable | Description |
+| --- | --- |
+| `OBSYNC_EVENT` | Event name (e.g. `PostFileReceived`) |
+| `OBSYNC_VAULT_NAME` | Vault name |
+| `OBSYNC_VAULT_ID` | Vault UID |
+| `OBSYNC_VAULT_PATH` | Local vault directory path |
+| `OBSYNC_FILE_PATH` | (file events only) Relative file path |
+
 ## Commands
 
 | Command     | Description                                           |
@@ -214,6 +351,7 @@ internal/
   cmd/               CLI commands (login, list, pull, push, watch, install, ...)
   config/            Config file management
   crypto/            E2E encryption (AES-256-GCM, scrypt, path encoding)
+  hooks/             Hook system (config loading, event dispatch, command runner)
   secrets/           Keyring abstraction (token + E2E password storage)
   sync/              WebSocket sync client (connect, push, pull, heartbeat)
   ui/                Terminal UI (colored output, prompts, spinners)

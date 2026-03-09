@@ -16,6 +16,7 @@ import (
 	"obsync/internal/api"
 	"obsync/internal/config"
 	"obsync/internal/crypto"
+	"obsync/internal/hooks"
 	"obsync/internal/secrets"
 	"obsync/internal/sync"
 	"obsync/internal/ui"
@@ -131,6 +132,14 @@ func (c *PushCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return nil
 	}
 
+	// Load hooks.
+	hookRunner := loadHookRunner(c.Path, vault.Name, vault.ID)
+
+	// Fire PrePush hook.
+	if err := hookRunner.Fire(ctx, hooks.Event{Event: hooks.PrePush}); err != nil {
+		return fmt.Errorf("pre-push hook: %w", err)
+	}
+
 	// Get WebSocket host.
 	host, err := client.VaultAccess(ctx, token, vault.ID, keyHash, vault.Host, vault.EncryptionVersion)
 	if err != nil {
@@ -211,6 +220,18 @@ func (c *PushCmd) Run(ctx context.Context, flags *RootFlags) error {
 		}
 		pushCount++
 		slog.Debug("pushed", "path", path, "size", info.Size())
+
+		if err := hookRunner.Fire(ctx, hooks.Event{
+			Event: hooks.PostFilePushed,
+			File: &hooks.FileInfo{
+				Path:      path,
+				LocalPath: localPath,
+				Size:      info.Size(),
+				Hash:      hash,
+			},
+		}); err != nil {
+			return fmt.Errorf("post-file-pushed hook: %w", err)
+		}
 	}
 
 	// Push deletions.
@@ -222,11 +243,26 @@ func (c *PushCmd) Run(ctx context.Context, flags *RootFlags) error {
 		delete(state.Files, path)
 		deleteCount++
 		slog.Debug("deleted", "path", path)
+
+		if err := hookRunner.Fire(ctx, hooks.Event{
+			Event: hooks.PostFileDeleted,
+			File:  &hooks.FileInfo{Path: path, LocalPath: filepath.Join(c.Path, path)},
+		}); err != nil {
+			return fmt.Errorf("post-file-deleted hook: %w", err)
+		}
 	}
 
 	// Save updated state.
 	if err := state.Save(c.Path); err != nil {
 		return fmt.Errorf("save state: %w", err)
+	}
+
+	// Fire PostPush hook.
+	if err := hookRunner.Fire(ctx, hooks.Event{
+		Event: hooks.PostPush,
+		Stats: &hooks.OperationStats{FilesSynced: pushCount, FilesDeleted: deleteCount},
+	}); err != nil {
+		return fmt.Errorf("post-push hook: %w", err)
 	}
 
 	u.Out().Successf("Push complete: %d files pushed, %d deleted", pushCount, deleteCount)
