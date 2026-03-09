@@ -95,19 +95,33 @@ Hooks are configured in JSON files at two levels:
 
 Both files are loaded and merged additively.
 
-### Example: auto-commit synced files to git
+### Example: bidirectional git sync
+
+Keep your vault backed up in a git repository. This hooks config pulls from git before pushing to Obsidian (to pick up any external changes), and commits + pushes to git after pulling from Obsidian.
 
 Create `~/notes/.obsync-hooks.json`:
 
 ```json
 {
   "hooks": {
+    "PrePush": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git pull --rebase origin main",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
     "PostPull": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "git add -A && git diff --cached --quiet || git commit -m \"sync: $(date +%Y-%m-%d_%H:%M:%S)\" && git push origin main"
+            "command": "git add -A && git diff --cached --quiet || (git commit -m \"sync: $(date +%Y-%m-%d_%H:%M:%S)\" && git pull --rebase origin main && git push origin main)",
+            "timeout": 60
           }
         ]
       }
@@ -116,7 +130,8 @@ Create `~/notes/.obsync-hooks.json`:
 }
 ```
 
-This runs after every pull completes — it stages all changes, commits if there's anything new, and pushes to your remote.
+- **PrePush** — before obsync pushes local changes to the vault, `git pull --rebase` brings in any commits pushed to git externally (e.g. from CI or another machine). If the rebase fails, the hook exits non-zero and obsync continues anyway (non-blocking by default).
+- **PostPull** — after obsync pulls remote changes to disk, stages everything, commits if there's a diff, rebases on the remote to avoid merge commits, and pushes to git.
 
 ### Hook events
 
