@@ -325,6 +325,17 @@ func scanLocalFiles(root string) (map[string]string, error) {
 			return nil
 		}
 
+		// Symlinks may point to directories; resolve and skip those.
+		if d.Type()&fs.ModeSymlink != 0 {
+			fi, err := os.Stat(path)
+			if err != nil {
+				return nil // skip broken symlinks
+			}
+			if fi.IsDir() {
+				return nil
+			}
+		}
+
 		// Compute SHA-256 hash.
 		data, err := os.ReadFile(path)
 		if err != nil {
