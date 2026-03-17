@@ -31,9 +31,9 @@ type CLI struct {
 	Push  PushCmd  `cmd:"" help:"Push local changes to a remote vault."`
 	Watch WatchCmd `cmd:"" help:"Watch and continuously sync a vault bidirectionally."`
 
-	Install   InstallCmd   `cmd:"" help:"Install a systemd user service for continuous vault sync."`
-	Uninstall UninstallCmd `cmd:"" help:"Uninstall the systemd user service for a vault."`
-	Status    StatusCmd    `cmd:"" help:"Show the status of the systemd user service for a vault."`
+	Install   InstallCmd   `cmd:"" help:"Install a background service for continuous vault sync."`
+	Uninstall UninstallCmd `cmd:"" help:"Uninstall the background service for a vault."`
+	Status    StatusCmd    `cmd:"" help:"Show the status of the background service for a vault."`
 }
 
 // exitPanic is used to handle Kong's Exit() calls via panic/recover.
