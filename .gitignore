@@ -3,6 +3,7 @@ venv
 node_modules
 .claude/
 CLAUDE.md
+docs/superpowers/
 
 # Go
 bin/
