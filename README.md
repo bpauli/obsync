@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-ffdd00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/mail7j)
 
-A command-line tool for syncing [Obsidian](https://obsidian.md) vaults on headless Linux servers. Uses the official Obsidian Sync protocol over WebSocket with full end-to-end encryption.
+A command-line tool for syncing [Obsidian](https://obsidian.md) vaults on headless servers. Uses the official Obsidian Sync protocol over WebSocket with full end-to-end encryption.
 
 Built for running Obsidian vaults on servers where the desktop app isn't available — perfect for automated workflows, CI/CD pipelines, or keeping a server-side copy of your notes.
 
@@ -14,7 +14,7 @@ Built for running Obsidian vaults on servers where the desktop app isn't availab
 - **Bidirectional sync** — pull remote changes and push local edits
 - **Real-time watch mode** — continuous sync via WebSocket with filesystem monitoring
 - **End-to-end encryption** — AES-256-GCM encryption, scrypt key derivation, compatible with Obsidian's E2E encryption
-- **systemd integration** — install as a user service for always-on sync
+- **Background service** — install as a systemd user service (Linux) or launchd Launch Agent (macOS) for always-on sync
 - **Vault config sync** — syncs `.obsidian/` directory (themes, plugins, settings)
 - **Headless operation** — file-based keyring backend, no GUI required
 - **Chunked transfers** — handles large files with 2MB chunked uploads/downloads
@@ -242,9 +242,9 @@ Hooks also receive these environment variables:
 | `pull`      | Pull remote vault changes to a local directory        |
 | `push`      | Push local changes to a remote vault                  |
 | `watch`     | Watch and continuously sync a vault bidirectionally   |
-| `install`   | Install a systemd user service for continuous sync    |
-| `uninstall` | Uninstall the systemd user service for a vault        |
-| `status`    | Show the status of the systemd user service           |
+| `install`   | Install a background service for continuous sync      |
+| `uninstall` | Uninstall the background service for a vault          |
+| `status`    | Show the status of the background service             |
 
 ### Global Flags
 
@@ -262,9 +262,9 @@ Hooks also receive these environment variables:
 -s, --save-password   Save E2E password to keyring for future use
 ```
 
-## systemd Integration
+## Background Service
 
-Install obsync as a systemd user service for always-on vault sync:
+Install obsync as a background service for always-on vault sync. The CLI auto-detects the platform and uses the native service manager.
 
 ```bash
 # Install and start the service
@@ -273,11 +273,17 @@ obsync install "My Notes" ~/notes
 # Check service status
 obsync status "My Notes"
 
-# View logs
-journalctl --user -u obsync@<vault-id>.service -f
-
 # Stop and remove the service
 obsync uninstall "My Notes"
+```
+
+### Linux (systemd)
+
+The `install` command creates a systemd user service at `~/.config/systemd/user/obsync@<vault-id>.service`.
+
+```bash
+# View logs
+journalctl --user -u obsync@<vault-id>.service -f
 ```
 
 For headless servers (no active login session), enable lingering:
@@ -287,6 +293,18 @@ loginctl enable-linger $USER
 ```
 
 The generated service file uses the `file` keyring backend automatically. Set `OBSYNC_KEYRING_PASSWORD` before installing if you use a custom keyring password.
+
+### macOS (launchd)
+
+The `install` command creates a Launch Agent at `~/Library/LaunchAgents/com.obsync.<vault-id>.plist`. The agent starts automatically on login and restarts on failure.
+
+```bash
+# View logs
+tail -f ~/Library/Logs/obsync/<vault-id>.err.log
+tail -f ~/Library/Logs/obsync/<vault-id>.out.log
+```
+
+No additional configuration is needed — macOS Keychain works natively for user Launch Agents.
 
 ## Security & Keyring
 
