@@ -21,6 +21,12 @@ const (
 
 	pingInterval = 20 * time.Second
 	writeTimeout = 30 * time.Second
+
+	// pushChanBuffer bounds the push-notification channel. It must be large
+	// enough to hold the echoes of an entire initial-push backlog so readLoop
+	// never blocks delivering them before receiveLoop starts draining (see the
+	// pushCh comment in connectToURL).
+	pushChanBuffer = 4096
 )
 
 // readTimeout is the maximum time the reader will wait for any message from the
@@ -179,7 +185,13 @@ func connectToURL(ctx context.Context, wsURL string, params ConnectParams) (*Cli
 		key:        params.Key,
 		encVer:     params.EncryptionVersion,
 		stopPing:   make(chan struct{}),
-		pushCh:     make(chan []byte, 16),
+		// pushCh must absorb the burst of push notifications the server echoes
+		// back while pushLocalChanges uploads the initial backlog — during that
+		// window nothing drains pushCh yet (receiveLoop starts afterward). If it
+		// fills, readLoop blocks on the send and can no longer deliver the
+		// push-acks that PushFile is waiting on, deadlocking the whole session.
+		// Size it to comfortably exceed a full-vault initial push.
+		pushCh:     make(chan []byte, pushChanBuffer),
 		responseCh: make(chan []byte, 16),
 		binaryCh:   make(chan []byte, 16),
 		readerDone: make(chan struct{}),
