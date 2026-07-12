@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	stdpath "path"
 	"strings"
+	stdsync "sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -105,6 +106,13 @@ type Client struct {
 	encVer     int
 	perFileMax int64
 	stopPing   chan struct{}
+
+	// writeMu serializes all writes to conn. gorilla/websocket permits only
+	// one concurrent writer, but writes originate from multiple goroutines
+	// (the watch loop's push/pull, the heartbeat's ping, and Close). Without
+	// this guard, a ping racing a push panics with "concurrent write to
+	// websocket connection".
+	writeMu stdsync.Mutex
 
 	// pushCh and binaryCh are used by the reader goroutine to dispatch
 	// incoming messages. pushCh receives push/ready/pong text messages.
@@ -428,11 +436,7 @@ func (c *Client) PushFile(ctx context.Context, path string, data []byte, hash st
 			end = len(encrypted)
 		}
 
-		if err := c.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
-			return fmt.Errorf("sync: set write deadline: %w", err)
-		}
-
-		if err := c.conn.WriteMessage(websocket.BinaryMessage, encrypted[start:end]); err != nil {
+		if err := c.writeBinary(encrypted[start:end]); err != nil {
 			return fmt.Errorf("sync: send push chunk %d: %w", i, err)
 		}
 
@@ -558,10 +562,12 @@ func (c *Client) StartHeartbeat(ctx context.Context) {
 func (c *Client) Close() error {
 	close(c.stopPing)
 
+	c.writeMu.Lock()
 	err := c.conn.WriteMessage(
 		websocket.CloseMessage,
 		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 	)
+	c.writeMu.Unlock()
 	if err != nil {
 		c.conn.Close()
 		return fmt.Errorf("sync: close: %w", err)
@@ -569,10 +575,25 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-// writeJSON writes a JSON message with a write deadline.
+// writeJSON writes a JSON message with a write deadline. The writeMu guard
+// ensures only one goroutine writes to the connection at a time, as required
+// by gorilla/websocket.
 func (c *Client) writeJSON(v any) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if err := c.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return err
 	}
 	return c.conn.WriteJSON(v)
+}
+
+// writeBinary writes a binary frame with a write deadline, serialized behind
+// writeMu like writeJSON.
+func (c *Client) writeBinary(data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if err := c.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return err
+	}
+	return c.conn.WriteMessage(websocket.BinaryMessage, data)
 }
