@@ -21,8 +21,13 @@ const (
 
 	pingInterval = 20 * time.Second
 	writeTimeout = 30 * time.Second
-	readTimeout  = 60 * time.Second
 )
+
+// readTimeout bounds how long readLoop waits for any inbound frame before
+// treating the connection as dead. It must exceed pingInterval so the
+// heartbeat's pong keeps an idle connection alive. Package-level var for test
+// injection.
+var readTimeout = 60 * time.Second
 
 // PushMessage represents a server-sent push notification about a file change.
 type PushMessage struct {
@@ -193,7 +198,13 @@ func connectToURL(ctx context.Context, wsURL string, params ConnectParams) (*Cli
 	}
 
 	// Read the server's initial response (before reader goroutine starts).
+	// Bound it so a stalled handshake fails fast instead of hanging; readLoop
+	// re-arms its own deadline once it takes over.
 	var resp serverResponse
+	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("sync: set read deadline: %w", err)
+	}
 	if err := conn.ReadJSON(&resp); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("sync: read init response: %w", err)
@@ -224,6 +235,20 @@ func connectToURL(ctx context.Context, wsURL string, params ConnectParams) (*Cli
 func (c *Client) readLoop() {
 	defer close(c.readerDone)
 	for {
+		// Re-arm the read deadline on every iteration. A silently dropped
+		// connection (half-open TCP with no FIN/RST) would otherwise block
+		// ReadMessage forever, wedging the watch: the reader never errors, its
+		// channels never close, and syncLoop's reconnect never fires. Any
+		// inbound frame — including the heartbeat's pong every pingInterval —
+		// resets this, so a live-but-idle connection stays open while a dead
+		// one trips readTimeout and surfaces as an error below.
+		if err := c.conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			slog.Warn("set read deadline failed", "error", err)
+			close(c.pushCh)
+			close(c.responseCh)
+			close(c.binaryCh)
+			return
+		}
 		msgType, data, err := c.conn.ReadMessage()
 		if err != nil {
 			// Connection closed or error — close channels to signal consumers.

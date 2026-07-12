@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	stdsync "sync"
 	"testing"
 	"time"
 
@@ -303,6 +304,68 @@ func TestReceivePush_SkipsPong(t *testing.T) {
 	}
 }
 
+// TestReceivePush_StalledConnectionUnblocks verifies that a silently stalled
+// connection — the server stops sending and never delivers a close frame, as
+// with a half-open TCP link — is surfaced as an error by the read deadline
+// rather than blocking ReceivePush forever. Regression test for the "alive but
+// disconnected" watch wedge (issue #5).
+func TestReceivePush_StalledConnectionUnblocks(t *testing.T) {
+	// Shrink the read deadline so the test doesn't wait the production 60s.
+	orig := readTimeout
+	readTimeout = 150 * time.Millisecond
+	defer func() { readTimeout = orig }()
+
+	serverDone := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var init initMessage
+		conn.ReadJSON(&init)
+		conn.WriteJSON(serverResponse{Res: "ok"})
+
+		// Go silent: hold the connection open without sending anything,
+		// simulating a half-open link that never delivers a close frame.
+		<-serverDone
+	}))
+	defer srv.Close()
+	defer close(serverDone)
+
+	c, err := connectToTestServer(t, srv, ConnectParams{
+		Token:    "tok",
+		VaultUID: "v",
+		Key:      testKey(),
+	})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+
+	// context.Background so the read deadline is the only thing that can
+	// unblock ReceivePush.
+	type result struct {
+		pm  *PushMessage
+		err error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		pm, err := c.ReceivePush(context.Background())
+		resCh <- result{pm, err}
+	}()
+
+	select {
+	case res := <-resCh:
+		if res.err == nil {
+			t.Fatalf("expected error from stalled connection, got push %+v", res.pm)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReceivePush blocked on a stalled connection — read deadline not enforced")
+	}
+}
+
 func TestPullFile(t *testing.T) {
 	key := testKey()
 	plaintext := []byte("hello, obsidian vault!")
@@ -586,6 +649,65 @@ func TestPing(t *testing.T) {
 	if err := c.Ping(context.Background()); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
+}
+
+// TestConcurrentWrites is a regression test for issue #5: writes from multiple
+// goroutines (heartbeat ping racing a push) must be serialized, otherwise
+// gorilla/websocket panics with "concurrent write to websocket connection".
+// Run with -race to also catch the underlying data race.
+func TestConcurrentWrites(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var init initMessage
+		conn.ReadJSON(&init)
+		conn.WriteJSON(serverResponse{Res: "ok"})
+
+		// Drain everything the client throws at us until it disconnects.
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c, err := connectToTestServer(t, srv, ConnectParams{
+		Token:    "tok",
+		VaultUID: "v",
+		Key:      testKey(),
+	})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+
+	ctx := context.Background()
+	const goroutines = 32
+	const iterations = 20
+
+	var wg stdsync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				// Mix JSON writes (ping) and binary writes (push chunk),
+				// both of which contend for the single websocket writer.
+				if err := c.Ping(ctx); err != nil {
+					return
+				}
+				if err := c.writeBinary([]byte("chunk")); err != nil {
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestClose(t *testing.T) {
