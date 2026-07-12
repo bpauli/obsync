@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	stdsync "sync"
 	"testing"
 	"time"
 
@@ -621,6 +622,127 @@ func TestClose(t *testing.T) {
 
 	if err := c.Close(); err != nil {
 		t.Fatalf("close: %v", err)
+	}
+}
+
+// TestConcurrentWrites verifies that writes from multiple goroutines are
+// serialized. Before writeMu, the push path racing the keepalive ping tripped
+// gorilla/websocket's "concurrent write to websocket connection" panic.
+func TestConcurrentWrites(t *testing.T) {
+	key := testKey()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var init initMessage
+		conn.ReadJSON(&init)
+		conn.WriteJSON(serverResponse{Res: "ok"})
+
+		// Drain everything the client sends. Acknowledge delete pushes so
+		// PushDelete round-trips complete; ignore pings.
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var msg pushMetadata
+			if json.Unmarshal(data, &msg) == nil && msg.Op == "push" {
+				conn.WriteJSON(serverResponse{Res: "ok"})
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c, err := connectToTestServer(t, srv, ConnectParams{Token: "tok", VaultUID: "v", Key: key})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+
+	ctx := context.Background()
+	const goroutines = 8
+	const iterations = 25
+
+	var wg stdsync.WaitGroup
+	errCh := make(chan error, goroutines*iterations)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				var err error
+				if g%2 == 0 {
+					err = c.Ping(ctx)
+				} else {
+					err = c.PushDelete(ctx, fmt.Sprintf("notes/%d-%d.md", g, i))
+				}
+				if err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatalf("concurrent write failed: %v", err)
+	}
+}
+
+// TestReadTimeout_DetectsDeadConnection verifies that a connection which goes
+// silent (server alive but never sending anything) is torn down via the read
+// deadline instead of blocking a consumer forever — the root cause of the
+// "alive but disconnected" wedge.
+func TestReadTimeout_DetectsDeadConnection(t *testing.T) {
+	orig := readTimeout
+	readTimeout = 150 * time.Millisecond
+	defer func() { readTimeout = orig }()
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var init initMessage
+		conn.ReadJSON(&init)
+		conn.WriteJSON(serverResponse{Res: "ok"})
+
+		// Go silent: keep the socket open but never send another frame.
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	c, err := connectToTestServer(t, srv, ConnectParams{Token: "tok", VaultUID: "v", Key: testKey()})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+
+	// A background context never cancels, so this can only return once the
+	// read deadline fires and readLoop closes the channels.
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.ReceivePush(context.Background())
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected error from wedged connection, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReceivePush blocked forever on a dead connection")
 	}
 }
 

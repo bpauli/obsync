@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	stdpath "path"
 	"strings"
+	stdsync "sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -20,8 +21,15 @@ const (
 
 	pingInterval = 20 * time.Second
 	writeTimeout = 30 * time.Second
-	readTimeout  = 60 * time.Second
 )
+
+// readTimeout is the maximum time the reader will wait for any message from the
+// server before treating the connection as dead. Because the client sends a
+// keepalive ping every pingInterval and the server answers server round-trips
+// (pushes, pongs, acks) promptly, a silent connection this long means the link
+// is wedged and must be torn down so the watch loop can reconnect. It is a var
+// so tests can shorten it.
+var readTimeout = 60 * time.Second
 
 // PushMessage represents a server-sent push notification about a file change.
 type PushMessage struct {
@@ -106,6 +114,15 @@ type Client struct {
 	perFileMax int64
 	stopPing   chan struct{}
 
+	// writeMu serializes everything written to the connection. gorilla/websocket
+	// permits only a single concurrent writer, and the request/response protocol
+	// multiplexes acks over the shared responseCh — so a whole round-trip
+	// (metadata write, chunk writes and their ack reads) must be held atomically.
+	// Without this, the push path in watchLoop racing the pull path in
+	// receiveLoop or the keepalive ping panics with "concurrent write to
+	// websocket connection" and can also cross wires between responses.
+	writeMu stdsync.Mutex
+
 	// pushCh and binaryCh are used by the reader goroutine to dispatch
 	// incoming messages. pushCh receives push/ready/pong text messages.
 	// responseCh receives other JSON responses (push acks, pull size, etc.).
@@ -185,6 +202,12 @@ func connectToURL(ctx context.Context, wsURL string, params ConnectParams) (*Cli
 	}
 
 	// Read the server's initial response (before reader goroutine starts).
+	// Bound the read so a server that accepts the socket but never answers the
+	// init can't strand the watcher blocked here forever.
+	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("sync: set init read deadline: %w", err)
+	}
 	var resp serverResponse
 	if err := conn.ReadJSON(&resp); err != nil {
 		conn.Close()
@@ -216,6 +239,18 @@ func connectToURL(ctx context.Context, wsURL string, params ConnectParams) (*Cli
 func (c *Client) readLoop() {
 	defer close(c.readerDone)
 	for {
+		// Refresh the read deadline before each read. Every server message
+		// (push, ack, or pong from the keepalive ping) extends it; if nothing
+		// arrives within readTimeout the connection is silently dead and
+		// ReadMessage returns an error, which tears the session down so the
+		// watch loop reconnects instead of blocking here forever.
+		if err := c.conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			close(c.pushCh)
+			close(c.responseCh)
+			close(c.binaryCh)
+			return
+		}
+
 		msgType, data, err := c.conn.ReadMessage()
 		if err != nil {
 			// Connection closed or error — close channels to signal consumers.
@@ -285,6 +320,12 @@ var ErrFileTooLarge = fmt.Errorf("sync: file size over limit")
 // PullFile sends a pull request for a file UID and reads the binary response frames,
 // reassembling and decrypting the content.
 func (c *Client) PullFile(ctx context.Context, uid int64) ([]byte, error) {
+	// Hold the write lock across the whole request/response so the pull request,
+	// its size reply, and its binary frames aren't interleaved with a concurrent
+	// push or ping (see writeMu).
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
 	req := pullRequest{Op: "pull", UID: uid}
 	if err := c.writeJSON(req); err != nil {
 		return nil, fmt.Errorf("sync: send pull: %w", err)
@@ -381,6 +422,12 @@ func (c *Client) PushFile(ctx context.Context, path string, data []byte, hash st
 		Pieces:    pieces,
 	}
 
+	// Hold the write lock across the metadata write, every chunk write, and their
+	// ack reads so this push is atomic w.r.t. concurrent pulls/pings (see
+	// writeMu). Acquire it only after the CPU-heavy encryption above is done.
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -471,6 +518,10 @@ func (c *Client) PushDelete(ctx context.Context, path string) error {
 		Deleted:   true,
 	}
 
+	// Atomic request/response (see writeMu).
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -528,6 +579,9 @@ func (c *Client) readBinary(ctx context.Context) ([]byte, error) {
 // Ping sends a ping message to the server.
 func (c *Client) Ping(ctx context.Context) error {
 	msg := pingMessage{Op: "ping"}
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return c.writeJSON(msg)
 }
 
@@ -558,10 +612,13 @@ func (c *Client) StartHeartbeat(ctx context.Context) {
 func (c *Client) Close() error {
 	close(c.stopPing)
 
+	// Serialize the close frame against any in-flight write (see writeMu).
+	c.writeMu.Lock()
 	err := c.conn.WriteMessage(
 		websocket.CloseMessage,
 		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 	)
+	c.writeMu.Unlock()
 	if err != nil {
 		c.conn.Close()
 		return fmt.Errorf("sync: close: %w", err)
