@@ -1,7 +1,6 @@
 # obsync
 
 [![release](https://github.com/bpauli/obsync/actions/workflows/release.yml/badge.svg)](https://github.com/bpauli/obsync/actions/workflows/release.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/bpauli/obsync)](https://goreportcard.com/report/github.com/bpauli/obsync)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-ffdd00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/mail7j)
 
