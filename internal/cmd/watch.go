@@ -407,10 +407,10 @@ func (c *WatchCmd) pushLocalChanges(ctx context.Context, sc *sync.Client, key []
 			return pushCount, deleteCount, fmt.Errorf("stat file %s: %w", path, err)
 		}
 
-		now := time.Now().UnixMilli()
 		mtime := info.ModTime().UnixMilli()
+		ctime := uploadCreationTime(state.Files[path], mtime)
 
-		if err := sc.PushFile(ctx, path, data, hash, info.Size(), now, mtime, false); err != nil {
+		if err := sc.PushFile(ctx, path, data, hash, info.Size(), ctime, mtime, false); err != nil {
 			if errors.Is(err, sync.ErrFileTooLarge) {
 				slog.Warn("skipping file (exceeds server size limit)", "path", path, "size", info.Size())
 				continue
@@ -422,7 +422,7 @@ func (c *WatchCmd) pushLocalChanges(ctx context.Context, sc *sync.Client, key []
 			Hash:     hash,
 			SyncHash: hash,
 			MTime:    mtime,
-			CTime:    now,
+			CTime:    ctime,
 			Size:     info.Size(),
 		}
 		pushCount++

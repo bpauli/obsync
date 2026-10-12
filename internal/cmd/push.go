@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"obsync/internal/api"
 	"obsync/internal/config"
@@ -200,10 +199,10 @@ func (c *PushCmd) Run(ctx context.Context, flags *RootFlags) error {
 		}
 
 		hash := localFiles[path]
-		now := time.Now().UnixMilli()
 		mtime := info.ModTime().UnixMilli()
+		ctime := uploadCreationTime(state.Files[path], mtime)
 
-		if err := sc.PushFile(ctx, path, data, hash, info.Size(), now, mtime, false); err != nil {
+		if err := sc.PushFile(ctx, path, data, hash, info.Size(), ctime, mtime, false); err != nil {
 			if errors.Is(err, sync.ErrFileTooLarge) {
 				slog.Warn("skipping file (exceeds server size limit)", "path", path, "size", info.Size())
 				continue
@@ -215,7 +214,7 @@ func (c *PushCmd) Run(ctx context.Context, flags *RootFlags) error {
 			Hash:     hash,
 			SyncHash: hash,
 			MTime:    mtime,
-			CTime:    now,
+			CTime:    ctime,
 			Size:     info.Size(),
 		}
 		pushCount++
@@ -288,6 +287,15 @@ func (c *PushCmd) resolveE2EPassword(u *ui.UI, store secrets.Store, vault api.Va
 		return "", &ExitError{Code: ExitAuth, Err: fmt.Errorf("e2e password: %w", err)}
 	}
 	return pw, nil
+}
+
+func uploadCreationTime(previous sync.FileState, mtime int64) int64 {
+	if previous.CTime > 0 {
+		return previous.CTime
+	}
+	// Go does not expose a portable file creation time. Use modification time
+	// as an estimate until a creation time is stored, rather than upload time.
+	return mtime
 }
 
 // scanLocalFiles walks the vault directory and returns a map of relative paths to SHA-256 hashes.
